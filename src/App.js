@@ -99,7 +99,7 @@ function App() {
     if (tableMatch) {
       const tableName = tableMatch[1];
       try {
-        const res = await axios.post('http://localhost:8000/api/execute/', { query: `SELECT * FROM ${tableName};` });
+        const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/');
         if (res.data.status === 'success') {
           setExistingData(res.data.data || []);
           if (!activeSchema || activeSchema.name !== tableName) {
