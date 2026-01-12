@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-le3u@=@7)($7z*@uk%px)q-z7%7@*jbv)gwirb%xxqd=m4$j8y
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['sql-smart-lab.onrender.com', '127.0.0.1', 'localhost']
 
 
 # Application definition
