@@ -114,11 +114,12 @@ function App() {
   };
 
   // --- 5. UPDATED LIVE EDITOR SYNC (Instant + Debounced) ---
+  // --- 1. LOCAL-ONLY EDITOR SYNC (No Network Calls while typing) ---
   const handleEditorChange = (value) => {
     const val = value || "";
     setQuery(val);
     
-    // 1. IMMEDIATE LOCAL DETECTION (Bypasses the 400 error)
+    // IMMEDIATE LOCAL DETECTION: This happens instantly on the client side
     const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
     
     if (tableMatch) {
@@ -127,20 +128,36 @@ function App() {
       if (SCHEMA_REGISTRY[tableName]) {
         setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
       }
-
-      // 2. DEBOUNCE THE SERVER CALL (Reduces console errors)
-      if (debounceTimer.current) clearTimeout(debounceTimer.current);
-      debounceTimer.current = setTimeout(() => {
-        fetchTableData(tableName);
-      }, 500); // Wait for 500ms pause in typing
     }
 
-    // 3. LIVE GHOST-TEXT (Always instant for better visualization)
+    // LIVE GHOST-TEXT: Always instant, no network delay
     setMultiRowPreview(parseAllInsertRows(val));
 
     const detectedSchema = parseSchema(val);
     if (detectedSchema) setActiveSchema(detectedSchema);
   };
+
+  // --- 2. THE SECRET FIX: ON-DEMAND DATA SYNC ---
+  // Instead of fetching while typing, we fetch ONLY when the table name changes
+  // This prevents the "400 Bad Request" errors from incomplete queries.
+  useEffect(() => {
+    const tableMatch = query.match(/(?:FROM|INTO|UPDATE)\s+(\w+)/i);
+    if (tableMatch && activeSchema) {
+       const tableName = tableMatch[1].toLowerCase();
+       // Only fetch if we don't have data yet or it's a new table
+       if (existingData.length === 0) {
+          const fetchExisting = async () => {
+             try {
+                const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+                   query: `SELECT * FROM ${tableName} LIMIT 5;` 
+                });
+                if (res.data.status === 'success') setExistingData(res.data.data);
+             } catch (e) { /* Error is silent and doesn't break UI */ }
+          };
+          fetchExisting();
+       }
+    }
+  }, [activeSchema]); // Only runs when a table is first detected
 
   const runQuery = async (overrideQuery = null) => {
     const activeQuery = overrideQuery || query;
@@ -232,9 +249,28 @@ function App() {
               <thead><tr>{activeSchema.columns.map((c, i) => (<th key={i} style={{ textAlign: 'left', padding: '10px', border: `1px solid ${colors.border}`, color: colors.mellowBlue }}>{c.name}</th>))}</tr></thead>
               <tbody>
                 {/* Existing Database Rows (Ghosted) */}
-                {existingData.map((row, rIdx) => (<tr key={`ex-${rIdx}`} style={{ opacity: 0.3 }}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}
-                {/* Live Typing Preview */}
-                {multiRowPreview.map((row, rIdx) => (<tr key={`new-${rIdx}`}>{activeSchema.columns.map((_, cIdx) => (<td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}`, color: colors.previewPurple, fontWeight: 'bold' }}>{row[cIdx] || '...'}</td>))}</tr>))}
+                {/* Existing Rows: Faded background context */}
+{existingData.map((row, rIdx) => (
+  <tr key={`ex-${rIdx}`} style={{ opacity: 0.2 }}>
+    {row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}
+  </tr>
+))}
+
+{/* Live Typing: Bright and Bold */}
+{multiRowPreview.map((row, rIdx) => (
+  <tr key={`new-${rIdx}`}>
+    {activeSchema.columns.map((_, cIdx) => (
+      <td key={cIdx} style={{ 
+        padding: '10px', 
+        border: `1px solid ${colors.border}`, 
+        color: colors.previewPurple, 
+        fontWeight: 'bold' 
+      }}>
+        {row[cIdx] || '...'} 
+      </td>
+    ))}
+  </tr>
+))}
               </tbody>
             </table>
           </div>
