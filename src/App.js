@@ -101,26 +101,39 @@ function App() {
 
   // --- 4. IMPROVED LIVE EDITOR SYNC (Fixes Memorization/Visibility) ---
   const handleEditorChange = async (value) => {
-    const val = value || "";
-    setQuery(val);
+  const val = value || "";
+  setQuery(val);
+  
+  // 1. IMMEDIATE TABLE DETECTION (Prioritize UI speed)
+  const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
+  
+  if (tableMatch) {
+    const tableName = tableMatch[1].toLowerCase();
     
-    // 1. DYNAMIC TABLE DETECTION (Immediate schema pop-up)
-    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
-    if (tableMatch) {
-      const tableName = tableMatch[1].toLowerCase();
-      if (SCHEMA_REGISTRY[tableName]) {
-        setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
-        
-        // Fetch existing data for the background rows
-        try {
-          const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-            query: `SELECT * FROM ${tableName} LIMIT 5;` 
-          });
-          if (res.data.status === 'success') setExistingData(res.data.data || []);
-        } catch (e) { /* Keep current data if fetch fails during typing */ }
-      }
+    // Check our local Registry first so the table appears INSTANTLY
+    if (SCHEMA_REGISTRY[tableName]) {
+      setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
     }
 
+    // 2. BACKGROUND DATA FETCH (Optional)
+    // Wrap this in a try/catch so even if the backend fails (because the query is incomplete), 
+    // the table structure from Step 1 stays on the screen.
+    try {
+      const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+        query: `SELECT * FROM ${tableName} LIMIT 3;` 
+      });
+      if (res.data.status === 'success') {
+        setExistingData(res.data.data || []);
+      }
+    } catch (e) {
+      // If backend fails while typing, we just don't show "Existing Data"
+      // but the ACTIVE SCHEMA remains visible because of step 1.
+    }
+  }
+
+  // 3. LIVE "GHOST" VALUES (Maps what you type into the table cells)
+  setMultiRowPreview(parseAllInsertRows(val));
+};
     // 2. LIVE GHOST-TEXT EXTRACTION
     setMultiRowPreview(parseAllInsertRows(val));
 
