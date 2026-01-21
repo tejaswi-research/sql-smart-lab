@@ -104,40 +104,40 @@ function App() {
   const val = value || "";
   setQuery(val);
   
-  // 1. IMMEDIATE TABLE DETECTION (Prioritize UI speed)
+  // 1. REGEX DETECTION (Immediate & Local)
+  // This detects the table name and triggers the UI instantly
   const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
   
   if (tableMatch) {
     const tableName = tableMatch[1].toLowerCase();
     
-    // Check our local Registry first so the table appears INSTANTLY
+    // Check your local registry. If it's a known table, show it IMMEDIATELY.
     if (SCHEMA_REGISTRY[tableName]) {
-      setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
+      setActiveSchema({ 
+        name: tableName, 
+        columns: SCHEMA_REGISTRY[tableName] 
+      });
     }
 
-    // 2. BACKGROUND DATA FETCH (Optional)
-    // Wrap this in a try/catch so even if the backend fails (because the query is incomplete), 
-    // the table structure from Step 1 stays on the screen.
+    // 2. NETWORK SYNC (Background only)
+    // We wrap this in a try/catch so the 400 errors you see in your 
+    // console don't crash the UI or hide the table.
     try {
       const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-        query: `SELECT * FROM ${tableName} LIMIT 3;` 
+        query: `SELECT * FROM ${tableName} LIMIT 5;` 
       });
       if (res.data.status === 'success') {
         setExistingData(res.data.data || []);
       }
     } catch (e) {
-      // If backend fails while typing, we just don't show "Existing Data"
-      // but the ACTIVE SCHEMA remains visible because of step 1.
+      // If server returns 400 (Bad Request), we just keep the 
+      // table structure visible and wait for the user to finish typing.
     }
   }
 
-  // 3. LIVE "GHOST" VALUES (Maps what you type into the table cells)
+  // 3. LIVE GHOST-TEXT (Fills the table cells while typing)
   setMultiRowPreview(parseAllInsertRows(val));
-
-    // 3. MANUAL CREATE TABLE PARSING
-    const detectedSchema = parseSchema(val);
-    if (detectedSchema) setActiveSchema(detectedSchema);
-  };
+};
 
   const runQuery = async (overrideQuery = null) => {
     const activeQuery = overrideQuery || query;
