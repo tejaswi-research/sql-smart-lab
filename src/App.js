@@ -131,7 +131,7 @@ function App() {
           setExistingData(res.data.data || []);
         }
       } catch (e) {
-        setExistingData([]);
+        
       }
     }
 
@@ -146,7 +146,7 @@ function App() {
     setError(""); setSuccessMsg("");
     const upperQ = activeQuery.toUpperCase();
     try {
-      const tableMatch = activeQuery.match(/(?:FROM|TABLE|UPDATE|INTO|ON)\s+(\w+)/i);
+      const tableMatch = activeQuery.match(/(?:FROM|TABLE|UPDATE|INSERT\s+INTO|INTO)\s+(\w+)/i);
       const tableName = tableMatch ? tableMatch[1] : null;
 
       if (tableName && (upperQ.includes("ALTER") || upperQ.includes("DELETE") || upperQ.includes("DROP") || upperQ.includes("UPDATE"))) {
@@ -157,14 +157,24 @@ function App() {
       const response = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: activeQuery });
       
       if (response.data.status === 'success') {
-        setSuccessMsg(response.data.message || "Command executed successfully!");
-        if (tableName && !upperQ.includes("DROP")) {
-          const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
-          setResults({ columns: updated.data.columns, data: updated.data.data });
-        }
-        if (upperQ.includes("DROP")) setActiveSchema(null);
-        setExistingData([]); setMultiRowPreview([]);
+      setSuccessMsg(response.data.message || "Command executed successfully!");
+
+      // If the user just DROPPED the table, we must clear the UI 
+      // because that table no longer exists in the database.
+      if (upperQ.includes("DROP")) {
+        setActiveSchema(null);     // Removes the dashed-blue Structural Preview
+        setResults({ columns: [], data: [] }); // Clears the "AFTER" table
+        setSources([]);            // Clears the "BEFORE" snapshot
+        setExistingData([]);       // Clears the ghost rows
+      } 
+      // Otherwise, if it's an INSERT/UPDATE, refresh the "AFTER" table
+      else if (tableName) {
+        const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+          query: `SELECT * FROM ${tableName};` 
+        });
+        setResults({ columns: updated.data.columns, data: updated.data.data });
       }
+    }
     } catch (err) {
       setError(err.response?.data?.message || "Execution Failed");
     }
