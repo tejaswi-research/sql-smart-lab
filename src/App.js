@@ -4,7 +4,6 @@ import axios from 'axios';
 import SmartSuggestions from './SmartSuggestions';
 
 // --- 1. DYNAMIC SCHEMA REGISTRY ---
-// Add all your tables here to make the preview work for more than just "student"
 const SCHEMA_REGISTRY = {
   student: [
     { name: 'emp_id' }, { name: 'emp_name' }, { name: 'departmenit_id' }
@@ -38,8 +37,9 @@ const parseSchema = (text) => {
   return null;
 };
 
+// Updated to catch live typing (open parentheses)
 const parseAllInsertRows = (text) => {
-  const matches = [...text.matchAll(/VALUES\s*\(([\s\S]*?)\)/gi)];
+  const matches = [...text.matchAll(/VALUES\s*\(([\s\S]*?)(?:\)|$)/gi)];
   return matches.map(match => match[1].split(',').map(val => val.trim().replace(/['"]/g, '')));
 };
 
@@ -70,22 +70,17 @@ function App() {
 
   const applySuggestion = (sql) => {
     setQuery(sql);
-    runQuery(sql); // Use the local runQuery function
+    runQuery(sql);
   };
 
-  // --- 3. THE INTENT-BASED SMART ANALYZER ---
   const analyzeQuestion = () => {
     const q = studentQuestion.toLowerCase();
     let steps = [];
-
     if (q.match(/minimum|maximum|max|min|avg|average|count|sum/)) {
       steps = [
         { id: 1, text: "Use Aggregate Function: SELECT MAX(), MIN(), etc.", regex: /(MAX|MIN|AVG|COUNT|SUM)/i },
         { id: 2, text: "Specify Source: FROM [Table]", regex: /FROM/i }
       ];
-      if (q.match(/rename|as|title/)) {
-        steps.push({ id: 3, text: "Rename columns using AS 'New Name'", regex: /AS/i });
-      }
     } else if (q.match(/delete|remove|clear/)) {
       steps = [
         { id: 1, text: "Start with DELETE FROM [Table]", regex: /DELETE\s+FROM/i },
@@ -98,57 +93,52 @@ function App() {
         steps.push({ id: 3, text: "Filter results using WHERE [Condition]", regex: /WHERE/i });
       }
     }
-
     if (q.match(/create|new table|make table/)) {
-      steps = [
-        { id: 1, text: "Use CREATE TABLE [TableName]", regex: /CREATE\s+TABLE/i },
-        { id: 2, text: "Pro-tip: Use 'IF NOT EXISTS' to avoid errors", regex: /IF\s+NOT\s+EXISTS/i },
-        { id: 3, text: "Define columns inside ( )", regex: /\(.*\)/i }
-      ];
+      steps = [{ id: 1, text: "Use CREATE TABLE [TableName]", regex: /CREATE\s+TABLE/i }];
     }
     setRoadmap(steps);
   };
 
-  // --- 4. LIVE EDITOR SYNC ---
+  // --- 4. IMPROVED LIVE EDITOR SYNC (Fixes Memorization/Visibility) ---
   const handleEditorChange = async (value) => {
     const val = value || "";
     setQuery(val);
     
-    // Dynamic Table Detection
-    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE)\s+(\w+)/i);
+    // 1. DYNAMIC TABLE DETECTION (Immediate schema pop-up)
+    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
     if (tableMatch) {
       const tableName = tableMatch[1].toLowerCase();
-      
-      // Check Registry first for instant UI response
       if (SCHEMA_REGISTRY[tableName]) {
         setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
-      }
-
-      // Then try to fetch real existing data for the "Ghost" rows
-      try {
-        const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName} LIMIT 5;` });
-        if (res.data.status === 'success') {
-          setExistingData(res.data.data || []);
-        }
-      } catch (e) {
         
+        // Fetch existing data for the background rows
+        try {
+          const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+            query: `SELECT * FROM ${tableName} LIMIT 5;` 
+          });
+          if (res.data.status === 'success') setExistingData(res.data.data || []);
+        } catch (e) { /* Keep current data if fetch fails during typing */ }
       }
     }
 
+    // 2. LIVE GHOST-TEXT EXTRACTION
+    setMultiRowPreview(parseAllInsertRows(val));
+
+    // 3. MANUAL CREATE TABLE PARSING
     const detectedSchema = parseSchema(val);
     if (detectedSchema) setActiveSchema(detectedSchema);
-    
-    setMultiRowPreview(parseAllInsertRows(val));
   };
 
   const runQuery = async (overrideQuery = null) => {
     const activeQuery = overrideQuery || query;
     setError(""); setSuccessMsg("");
     const upperQ = activeQuery.toUpperCase();
+    
     try {
-      const tableMatch = activeQuery.match(/(?:FROM|TABLE|UPDATE|INSERT\s+INTO|INTO)\s+(\w+)/i);
+      const tableMatch = activeQuery.match(/(?:FROM|TABLE|UPDATE|INSERT\s+INTO|INTO|DELETE\s+FROM)\s+(\w+)/i);
       const tableName = tableMatch ? tableMatch[1] : null;
 
+      // Before Snapshot
       if (tableName && (upperQ.includes("ALTER") || upperQ.includes("DELETE") || upperQ.includes("DROP") || upperQ.includes("UPDATE"))) {
         const snapshot = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
         setSources([{ name: tableName, columns: snapshot.data.columns, data: snapshot.data.data }]);
@@ -157,24 +147,19 @@ function App() {
       const response = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: activeQuery });
       
       if (response.data.status === 'success') {
-      setSuccessMsg(response.data.message || "Command executed successfully!");
+        setSuccessMsg(response.data.message || "Command executed successfully!");
 
-      // If the user just DROPPED the table, we must clear the UI 
-      // because that table no longer exists in the database.
-      if (upperQ.includes("DROP")) {
-        setActiveSchema(null);     // Removes the dashed-blue Structural Preview
-        setResults({ columns: [], data: [] }); // Clears the "AFTER" table
-        setSources([]);            // Clears the "BEFORE" snapshot
-        setExistingData([]);       // Clears the ghost rows
-      } 
-      // Otherwise, if it's an INSERT/UPDATE, refresh the "AFTER" table
-      else if (tableName) {
-        const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-          query: `SELECT * FROM ${tableName};` 
-        });
-        setResults({ columns: updated.data.columns, data: updated.data.data });
+        if (upperQ.includes("DROP")) {
+          setActiveSchema(null); setResults({ columns: [], data: [] }); setSources([]); setExistingData([]);
+        } 
+        else if (tableName) {
+          const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+            query: `SELECT * FROM ${tableName};` 
+          });
+          setResults({ columns: updated.data.columns, data: updated.data.data });
+        }
+        setExistingData([]); setMultiRowPreview([]);
       }
-    }
     } catch (err) {
       setError(err.response?.data?.message || "Execution Failed");
     }
@@ -224,20 +209,7 @@ function App() {
 
         {/* SMART SUGGESTIONS */}
         {query.toLowerCase().includes('student') && (
-          <div style={{ marginTop: '20px', padding: '15px', background: 'rgba(79, 172, 254, 0.1)', borderLeft: `4px solid ${colors.mellowBlue}`, borderRadius: '4px' }}>
-            <p style={{ fontSize: '12px', color: colors.mellowBlue, margin: '0 0 10px 0', fontWeight: 'bold' }}>💡 EXPLORATION IDEAS</p>
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-              {[
-                { label: "View names & IDs", sql: "SELECT emp_id, emp_name FROM student;" },
-                { label: "Find CS Students", sql: "SELECT * FROM student WHERE departmenit_id = 'CS';" },
-                { label: "Count by Dept", sql: "SELECT departmenit_id, COUNT(*) FROM student GROUP BY departmenit_id;" }
-              ].map((opt, i) => (
-                <button key={i} onClick={() => applySuggestion(opt.sql)} style={{ padding: '6px 12px', fontSize: '11px', background: '#222', border: `1px solid ${colors.border}`, color: '#fff', borderRadius: '20px', cursor: 'pointer' }}>
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <SmartSuggestions query={query} onApplySuggestion={applySuggestion} />
         )}
 
         {/* STRUCTURAL PREVIEW (ACTIVE SCHEMA) */}
@@ -247,8 +219,8 @@ function App() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <thead><tr>{activeSchema.columns.map((c, i) => (<th key={i} style={{ textAlign: 'left', padding: '10px', border: `1px solid ${colors.border}`, color: colors.mellowBlue }}>{c.name}</th>))}</tr></thead>
               <tbody>
-                {existingData.map((row, rIdx) => (<tr key={`ex-${rIdx}`} style={{ opacity: 0.5 }}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}
-                {multiRowPreview.map((row, rIdx) => (<tr key={`new-${rIdx}`}>{activeSchema.columns.map((_, cIdx) => (<td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}`, color: colors.previewPurple, fontWeight: 'bold' }}>{row[cIdx] || ''}</td>))}</tr>))}
+                {existingData.map((row, rIdx) => (<tr key={`ex-${rIdx}`} style={{ opacity: 0.3 }}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}
+                {multiRowPreview.map((row, rIdx) => (<tr key={`new-${rIdx}`}>{activeSchema.columns.map((_, cIdx) => (<td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}`, color: colors.previewPurple, fontWeight: 'bold' }}>{row[cIdx] || '...'}</td>))}</tr>))}
               </tbody>
             </table>
           </div>
