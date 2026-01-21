@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import SmartSuggestions from './SmartSuggestions';
@@ -8,11 +8,11 @@ const SCHEMA_REGISTRY = {
   student: [
     { name: 'emp_id' }, { name: 'emp_name' }, { name: 'departmenit_id' }
   ],
+  employee: [
+    { name: 'emp_id' }, { name: 'emp_name' }, { name: 'salary' }
+  ],
   department: [
     { name: 'dept_id' }, { name: 'dept_name' }, { name: 'location' }
-  ],
-  courses: [
-    { name: 'course_id' }, { name: 'course_title' }, { name: 'credits' }
   ]
 };
 
@@ -37,7 +37,6 @@ const parseSchema = (text) => {
   return null;
 };
 
-// Updated to catch live typing (open parentheses)
 const parseAllInsertRows = (text) => {
   const matches = [...text.matchAll(/VALUES\s*\(([\s\S]*?)(?:\)|$)/gi)];
   return matches.map(match => match[1].split(',').map(val => val.trim().replace(/['"]/g, '')));
@@ -54,6 +53,9 @@ function App() {
   const [error, setError] = useState("");
   const [studentQuestion, setStudentQuestion] = useState("");
   const [roadmap, setRoadmap] = useState([]);
+
+  // Use a ref to keep track of the debounce timer
+  const debounceTimer = useRef(null);
 
   const colors = {
     bg: '#0f0f0f',
@@ -73,6 +75,21 @@ function App() {
     runQuery(sql);
   };
 
+  // --- 3. BACKGROUND DATA FETCH (Debounced) ---
+  const fetchTableData = async (tableName) => {
+    try {
+      const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+        query: `SELECT * FROM ${tableName} LIMIT 5;` 
+      });
+      if (res.data.status === 'success') {
+        setExistingData(res.data.data || []);
+      }
+    } catch (e) {
+      // Ignore 400 errors while typing to keep UI clean
+    }
+  };
+
+  // --- 4. THE INTENT-BASED SMART ANALYZER ---
   const analyzeQuestion = () => {
     const q = studentQuestion.toLowerCase();
     let steps = [];
@@ -93,53 +110,34 @@ function App() {
         steps.push({ id: 3, text: "Filter results using WHERE [Condition]", regex: /WHERE/i });
       }
     }
-    if (q.match(/create|new table|make table/)) {
-      steps = [{ id: 1, text: "Use CREATE TABLE [TableName]", regex: /CREATE\s+TABLE/i }];
-    }
     setRoadmap(steps);
   };
 
-  // --- 4. IMPROVED LIVE EDITOR SYNC (Fixes Memorization/Visibility) ---
-  // --- IMPROVED LIVE EDITOR SYNC ---
-  const handleEditorChange = async (value) => {
+  // --- 5. UPDATED LIVE EDITOR SYNC (Instant + Debounced) ---
+  const handleEditorChange = (value) => {
     const val = value || "";
     setQuery(val);
     
     // 1. IMMEDIATE LOCAL DETECTION (Bypasses the 400 error)
-    // We look for the table name locally so the UI responds instantly
     const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
     
     if (tableMatch) {
       const tableName = tableMatch[1].toLowerCase();
-      
-      // If the table is in our local registry, show it IMMEDIATELY
+      // Logic-First: Show table structure immediately from local registry
       if (SCHEMA_REGISTRY[tableName]) {
-        setActiveSchema({ 
-          name: tableName, 
-          columns: SCHEMA_REGISTRY[tableName] 
-        });
+        setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
       }
 
-      // 2. BACKGROUND DATA FETCH
-      // We wrap this in try/catch so the 400 errors in your console 
-      // don't stop the table from appearing.
-      try {
-        const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-          query: `SELECT * FROM ${tableName} LIMIT 5;` 
-        });
-        if (res.data.status === 'success') {
-          setExistingData(res.data.data || []);
-        }
-      } catch (e) {
-        // We do nothing on error while typing. 
-        // This keeps the structural preview (activeSchema) visible!
-      }
+      // 2. DEBOUNCE THE SERVER CALL (Reduces console errors)
+      if (debounceTimer.current) clearTimeout(debounceTimer.current);
+      debounceTimer.current = setTimeout(() => {
+        fetchTableData(tableName);
+      }, 500); // Wait for 500ms pause in typing
     }
 
-    // 3. LIVE GHOST-TEXT (Fills cells as you type)
+    // 3. LIVE GHOST-TEXT (Always instant for better visualization)
     setMultiRowPreview(parseAllInsertRows(val));
 
-    // Manual Create Table parsing
     const detectedSchema = parseSchema(val);
     if (detectedSchema) setActiveSchema(detectedSchema);
   };
@@ -163,7 +161,6 @@ function App() {
       
       if (response.data.status === 'success') {
         setSuccessMsg(response.data.message || "Command executed successfully!");
-
         if (upperQ.includes("DROP")) {
           setActiveSchema(null); setResults({ columns: [], data: [] }); setSources([]); setExistingData([]);
         } 
@@ -183,7 +180,7 @@ function App() {
   return (
     <div style={{ display: 'flex', backgroundColor: colors.bg, color: '#ccc', minHeight: '100vh', fontFamily: 'sans-serif' }}>
       
-      {/* SIDEBAR */}
+      {/* SIDEBAR SECTION */}
       <div style={{ width: '280px', background: colors.sidebar, padding: '20px', borderRight: `1px solid ${colors.border}` }}>
         <h3 style={{ color: colors.mellowBlue, fontSize: '14px', marginBottom: '10px' }}>LOGIC TUTOR</h3>
         <textarea 
@@ -222,19 +219,21 @@ function App() {
           <button onClick={() => {setQuery(""); setResults({columns:[], data:[]}); setSources([]); setActiveSchema(null); setRoadmap([]); setStudentQuestion(""); setSuccessMsg("");}} style={{ padding: '10px 20px', background: 'transparent', border: `1px solid ${colors.border}`, color: '#666', borderRadius: '4px', cursor: 'pointer' }}>Clear All</button>
         </div>
 
-        {/* SMART SUGGESTIONS */}
+        {/* SMART SUGGESTIONS AREA */}
         {query.toLowerCase().includes('student') && (
           <SmartSuggestions query={query} onApplySuggestion={applySuggestion} />
         )}
 
-        {/* STRUCTURAL PREVIEW (ACTIVE SCHEMA) */}
+        {/* LIVE STRUCTURAL PREVIEW */}
         {activeSchema && (
           <div style={{ marginTop: '20px', background: colors.sidebar, padding: '15px', border: `1px dashed ${colors.mellowBlue}`, borderRadius: '8px', overflowX: 'auto' }}>
             <h5 style={{ margin: '0 0 10px 0', fontSize: '12px' }}>Structural Preview: {activeSchema.name}</h5>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
               <thead><tr>{activeSchema.columns.map((c, i) => (<th key={i} style={{ textAlign: 'left', padding: '10px', border: `1px solid ${colors.border}`, color: colors.mellowBlue }}>{c.name}</th>))}</tr></thead>
               <tbody>
+                {/* Existing Database Rows (Ghosted) */}
                 {existingData.map((row, rIdx) => (<tr key={`ex-${rIdx}`} style={{ opacity: 0.3 }}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}
+                {/* Live Typing Preview */}
                 {multiRowPreview.map((row, rIdx) => (<tr key={`new-${rIdx}`}>{activeSchema.columns.map((_, cIdx) => (<td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}`, color: colors.previewPurple, fontWeight: 'bold' }}>{row[cIdx] || '...'}</td>))}</tr>))}
               </tbody>
             </table>
@@ -244,7 +243,7 @@ function App() {
         {successMsg && <div style={{ marginTop: '20px', color: colors.successGreen }}>✓ {successMsg}</div>}
         {error && <div style={{ marginTop: '20px', color: colors.errorRed }}>⚠ {error}</div>}
 
-        {/* BEFORE/AFTER COMPARISON */}
+        {/* DATA VISUALIZATION (BEFORE/AFTER) */}
         <div style={{ display: 'flex', gap: '20px', marginTop: '30px' }}>
           {sources.length > 0 && (
             <div style={{ flex: 1 }}>
