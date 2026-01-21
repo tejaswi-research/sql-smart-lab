@@ -100,44 +100,49 @@ function App() {
   };
 
   // --- 4. IMPROVED LIVE EDITOR SYNC (Fixes Memorization/Visibility) ---
+  // --- IMPROVED LIVE EDITOR SYNC ---
   const handleEditorChange = async (value) => {
-  const val = value || "";
-  setQuery(val);
-  
-  // 1. REGEX DETECTION (Immediate & Local)
-  // This detects the table name and triggers the UI instantly
-  const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
-  
-  if (tableMatch) {
-    const tableName = tableMatch[1].toLowerCase();
+    const val = value || "";
+    setQuery(val);
     
-    // Check your local registry. If it's a known table, show it IMMEDIATELY.
-    if (SCHEMA_REGISTRY[tableName]) {
-      setActiveSchema({ 
-        name: tableName, 
-        columns: SCHEMA_REGISTRY[tableName] 
-      });
-    }
-
-    // 2. NETWORK SYNC (Background only)
-    // We wrap this in a try/catch so the 400 errors you see in your 
-    // console don't crash the UI or hide the table.
-    try {
-      const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-        query: `SELECT * FROM ${tableName} LIMIT 5;` 
-      });
-      if (res.data.status === 'success') {
-        setExistingData(res.data.data || []);
+    // 1. IMMEDIATE LOCAL DETECTION (Bypasses the 400 error)
+    // We look for the table name locally so the UI responds instantly
+    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
+    
+    if (tableMatch) {
+      const tableName = tableMatch[1].toLowerCase();
+      
+      // If the table is in our local registry, show it IMMEDIATELY
+      if (SCHEMA_REGISTRY[tableName]) {
+        setActiveSchema({ 
+          name: tableName, 
+          columns: SCHEMA_REGISTRY[tableName] 
+        });
       }
-    } catch (e) {
-      // If server returns 400 (Bad Request), we just keep the 
-      // table structure visible and wait for the user to finish typing.
-    }
-  }
 
-  // 3. LIVE GHOST-TEXT (Fills the table cells while typing)
-  setMultiRowPreview(parseAllInsertRows(val));
-};
+      // 2. BACKGROUND DATA FETCH
+      // We wrap this in try/catch so the 400 errors in your console 
+      // don't stop the table from appearing.
+      try {
+        const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+          query: `SELECT * FROM ${tableName} LIMIT 5;` 
+        });
+        if (res.data.status === 'success') {
+          setExistingData(res.data.data || []);
+        }
+      } catch (e) {
+        // We do nothing on error while typing. 
+        // This keeps the structural preview (activeSchema) visible!
+      }
+    }
+
+    // 3. LIVE GHOST-TEXT (Fills cells as you type)
+    setMultiRowPreview(parseAllInsertRows(val));
+
+    // Manual Create Table parsing
+    const detectedSchema = parseSchema(val);
+    if (detectedSchema) setActiveSchema(detectedSchema);
+  };
 
   const runQuery = async (overrideQuery = null) => {
     const activeQuery = overrideQuery || query;
