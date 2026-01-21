@@ -1,18 +1,18 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import SmartSuggestions from './SmartSuggestions';
 
-// --- 1. DYNAMIC SCHEMA REGISTRY ---
+// --- 1. DYNAMIC SCHEMA REGISTRY (Local Source of Truth) ---
 const SCHEMA_REGISTRY = {
   student: [
     { name: 'emp_id' }, { name: 'emp_name' }, { name: 'departmenit_id' }
   ],
-  employee: [
-    { name: 'emp_id' }, { name: 'emp_name' }, { name: 'salary' }
-  ],
   department: [
     { name: 'dept_id' }, { name: 'dept_name' }, { name: 'location' }
+  ],
+  courses: [
+    { name: 'course_id' }, { name: 'course_title' }, { name: 'credits' }
   ]
 };
 
@@ -26,11 +26,7 @@ const parseSchema = (text) => {
     const parsedCols = columnsRaw.map(col => {
       const parts = col.trim().split(/\s+/);
       const name = parts[0];
-      let type = "TEXT";
-      const fullDef = col.toUpperCase();
-      if (fullDef.includes("INT") || fullDef.includes("NUMBER")) type = "Number";
-      if (fullDef.includes("VARCHAR") || fullDef.includes("CHAR")) type = "Text";
-      return { name, type };
+      return { name, type: "TEXT" };
     }).filter(c => c.name && !['PRIMARY', 'FOREIGN', 'CONSTRAINT', 'KEY'].includes(c.name.toUpperCase()));
     return { name: tableName, columns: parsedCols };
   }
@@ -54,9 +50,6 @@ function App() {
   const [studentQuestion, setStudentQuestion] = useState("");
   const [roadmap, setRoadmap] = useState([]);
 
-  // Use a ref to keep track of the debounce timer
-  const debounceTimer = useRef(null);
-
   const colors = {
     bg: '#0f0f0f',
     sidebar: '#161616',
@@ -70,26 +63,54 @@ function App() {
     suggestionText: '#00f2fe'
   };
 
+  // --- 3. LIVE EDITOR SYNC (Synchronous & Local-First) ---
+  const handleEditorChange = (value) => {
+    const val = value || "";
+    setQuery(val);
+    
+    // Detect Table Name
+    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
+    
+    if (tableMatch) {
+      const tableName = tableMatch[1].toLowerCase();
+      // SHOW TABLE IMMEDIATELY: No async, no network, no 400-error blocking
+      if (SCHEMA_REGISTRY[tableName]) {
+        setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
+      }
+    }
+
+    // GHOST-TEXT PREVIEW: Instant mapping of typed values to columns
+    setMultiRowPreview(parseAllInsertRows(val));
+
+    const detectedSchema = parseSchema(val);
+    if (detectedSchema) setActiveSchema(detectedSchema);
+  };
+
+  // --- 4. SILENT BACKGROUND FETCH (Separated from Typing) ---
+  useEffect(() => {
+    const tableMatch = query.match(/(?:FROM|INTO|UPDATE)\s+(\w+)/i);
+    if (tableMatch && activeSchema) {
+      const tableName = tableMatch[1].toLowerCase();
+      // Only fetch background rows if we don't have them yet
+      if (existingData.length === 0) {
+        const fetchExisting = async () => {
+          try {
+            const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
+              query: `SELECT * FROM ${tableName} LIMIT 5;` 
+            });
+            if (res.data.status === 'success') setExistingData(res.data.data);
+          } catch (e) { /* Fail silently to keep console clean */ }
+        };
+        fetchExisting();
+      }
+    }
+  }, [activeSchema, query]);
+
   const applySuggestion = (sql) => {
     setQuery(sql);
     runQuery(sql);
   };
 
-  // --- 3. BACKGROUND DATA FETCH (Debounced) ---
-  const fetchTableData = async (tableName) => {
-    try {
-      const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-        query: `SELECT * FROM ${tableName} LIMIT 5;` 
-      });
-      if (res.data.status === 'success') {
-        setExistingData(res.data.data || []);
-      }
-    } catch (e) {
-      // Ignore 400 errors while typing to keep UI clean
-    }
-  };
-
-  // --- 4. THE INTENT-BASED SMART ANALYZER ---
   const analyzeQuestion = () => {
     const q = studentQuestion.toLowerCase();
     let steps = [];
@@ -113,52 +134,6 @@ function App() {
     setRoadmap(steps);
   };
 
-  // --- 5. UPDATED LIVE EDITOR SYNC (Instant + Debounced) ---
-  // --- 1. LOCAL-ONLY EDITOR SYNC (No Network Calls while typing) ---
-  const handleEditorChange = (value) => {
-    const val = value || "";
-    setQuery(val);
-    
-    // IMMEDIATE LOCAL DETECTION: This happens instantly on the client side
-    const tableMatch = val.match(/(?:INSERT\s+INTO|FROM|UPDATE|TABLE|DELETE\s+FROM)\s+(\w+)/i);
-    
-    if (tableMatch) {
-      const tableName = tableMatch[1].toLowerCase();
-      // Logic-First: Show table structure immediately from local registry
-      if (SCHEMA_REGISTRY[tableName]) {
-        setActiveSchema({ name: tableName, columns: SCHEMA_REGISTRY[tableName] });
-      }
-    }
-
-    // LIVE GHOST-TEXT: Always instant, no network delay
-    setMultiRowPreview(parseAllInsertRows(val));
-
-    const detectedSchema = parseSchema(val);
-    if (detectedSchema) setActiveSchema(detectedSchema);
-  };
-
-  // --- 2. THE SECRET FIX: ON-DEMAND DATA SYNC ---
-  // Instead of fetching while typing, we fetch ONLY when the table name changes
-  // This prevents the "400 Bad Request" errors from incomplete queries.
-  useEffect(() => {
-    const tableMatch = query.match(/(?:FROM|INTO|UPDATE)\s+(\w+)/i);
-    if (tableMatch && activeSchema) {
-       const tableName = tableMatch[1].toLowerCase();
-       // Only fetch if we don't have data yet or it's a new table
-       if (existingData.length === 0) {
-          const fetchExisting = async () => {
-             try {
-                const res = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-                   query: `SELECT * FROM ${tableName} LIMIT 5;` 
-                });
-                if (res.data.status === 'success') setExistingData(res.data.data);
-             } catch (e) { /* Error is silent and doesn't break UI */ }
-          };
-          fetchExisting();
-       }
-    }
-  }, [activeSchema]); // Only runs when a table is first detected
-
   const runQuery = async (overrideQuery = null) => {
     const activeQuery = overrideQuery || query;
     setError(""); setSuccessMsg("");
@@ -168,7 +143,6 @@ function App() {
       const tableMatch = activeQuery.match(/(?:FROM|TABLE|UPDATE|INSERT\s+INTO|INTO|DELETE\s+FROM)\s+(\w+)/i);
       const tableName = tableMatch ? tableMatch[1] : null;
 
-      // Before Snapshot
       if (tableName && (upperQ.includes("ALTER") || upperQ.includes("DELETE") || upperQ.includes("DROP") || upperQ.includes("UPDATE"))) {
         const snapshot = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
         setSources([{ name: tableName, columns: snapshot.data.columns, data: snapshot.data.data }]);
@@ -182,9 +156,7 @@ function App() {
           setActiveSchema(null); setResults({ columns: [], data: [] }); setSources([]); setExistingData([]);
         } 
         else if (tableName) {
-          const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { 
-            query: `SELECT * FROM ${tableName};` 
-          });
+          const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
           setResults({ columns: updated.data.columns, data: updated.data.data });
         }
         setExistingData([]); setMultiRowPreview([]);
@@ -197,7 +169,7 @@ function App() {
   return (
     <div style={{ display: 'flex', backgroundColor: colors.bg, color: '#ccc', minHeight: '100vh', fontFamily: 'sans-serif' }}>
       
-      {/* SIDEBAR SECTION */}
+      {/* SIDEBAR */}
       <div style={{ width: '280px', background: colors.sidebar, padding: '20px', borderRight: `1px solid ${colors.border}` }}>
         <h3 style={{ color: colors.mellowBlue, fontSize: '14px', marginBottom: '10px' }}>LOGIC TUTOR</h3>
         <textarea 
@@ -223,7 +195,7 @@ function App() {
         )}
       </div>
 
-      {/* MAIN CONTENT AREA */}
+      {/* MAIN CONTENT */}
       <div style={{ flex: 1, padding: '30px', overflowY: 'auto' }}>
         <h2 style={{ color: colors.mellowBlue, fontWeight: '400', marginBottom: '20px' }}>SQL Smart Lab</h2>
         
@@ -236,41 +208,40 @@ function App() {
           <button onClick={() => {setQuery(""); setResults({columns:[], data:[]}); setSources([]); setActiveSchema(null); setRoadmap([]); setStudentQuestion(""); setSuccessMsg("");}} style={{ padding: '10px 20px', background: 'transparent', border: `1px solid ${colors.border}`, color: '#666', borderRadius: '4px', cursor: 'pointer' }}>Clear All</button>
         </div>
 
-        {/* SMART SUGGESTIONS AREA */}
+        {/* CURIOSITY SUGGESTIONS */}
         {query.toLowerCase().includes('student') && (
           <SmartSuggestions query={query} onApplySuggestion={applySuggestion} />
         )}
 
-        {/* LIVE STRUCTURAL PREVIEW */}
+        {/* STRUCTURAL PREVIEW (ACTIVE SCHEMA) */}
         {activeSchema && (
           <div style={{ marginTop: '20px', background: colors.sidebar, padding: '15px', border: `1px dashed ${colors.mellowBlue}`, borderRadius: '8px', overflowX: 'auto' }}>
             <h5 style={{ margin: '0 0 10px 0', fontSize: '12px' }}>Structural Preview: {activeSchema.name}</h5>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-              <thead><tr>{activeSchema.columns.map((c, i) => (<th key={i} style={{ textAlign: 'left', padding: '10px', border: `1px solid ${colors.border}`, color: colors.mellowBlue }}>{c.name}</th>))}</tr></thead>
+              <thead>
+                <tr>
+                  {activeSchema.columns.map((c, i) => (
+                    <th key={i} style={{ textAlign: 'left', padding: '10px', border: `1px solid ${colors.border}`, color: colors.mellowBlue }}>{c.name}</th>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
-                {/* Existing Database Rows (Ghosted) */}
-                {/* Existing Rows: Faded background context */}
-{existingData.map((row, rIdx) => (
-  <tr key={`ex-${rIdx}`} style={{ opacity: 0.2 }}>
-    {row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}
-  </tr>
-))}
-
-{/* Live Typing: Bright and Bold */}
-{multiRowPreview.map((row, rIdx) => (
-  <tr key={`new-${rIdx}`}>
-    {activeSchema.columns.map((_, cIdx) => (
-      <td key={cIdx} style={{ 
-        padding: '10px', 
-        border: `1px solid ${colors.border}`, 
-        color: colors.previewPurple, 
-        fontWeight: 'bold' 
-      }}>
-        {row[cIdx] || '...'} 
-      </td>
-    ))}
-  </tr>
-))}
+                {/* Existing Data (Snapshot) */}
+                {existingData.map((row, rIdx) => (
+                  <tr key={`ex-${rIdx}`} style={{ opacity: 0.3 }}>
+                    {row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}` }}>{cell}</td>)}
+                  </tr>
+                ))}
+                {/* Live Typing Ghost Text */}
+                {multiRowPreview.map((row, rIdx) => (
+                  <tr key={`new-${rIdx}`}>
+                    {activeSchema.columns.map((_, cIdx) => (
+                      <td key={cIdx} style={{ padding: '10px', border: `1px solid ${colors.border}`, color: colors.previewPurple, fontWeight: 'bold' }}>
+                        {row[cIdx] || '...'}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -279,7 +250,6 @@ function App() {
         {successMsg && <div style={{ marginTop: '20px', color: colors.successGreen }}>✓ {successMsg}</div>}
         {error && <div style={{ marginTop: '20px', color: colors.errorRed }}>⚠ {error}</div>}
 
-        {/* DATA VISUALIZATION (BEFORE/AFTER) */}
         <div style={{ display: 'flex', gap: '20px', marginTop: '30px' }}>
           {sources.length > 0 && (
             <div style={{ flex: 1 }}>
@@ -287,9 +257,7 @@ function App() {
               <div style={{ background: colors.sidebar, padding: '15px', borderRadius: '8px', border: `1px solid ${colors.border}`, overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
                   <thead><tr>{sources[0].columns.map((c, i) => <th key={i} style={{ padding: '8px', border: `1px solid ${colors.border}`, textAlign: 'left' }}>{c}</th>)}</tr></thead>
-                  <tbody>{sources[0].data.length > 0 ? sources[0].data.map((row, rIdx) => (
-                      <tr key={rIdx}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '8px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>
-                    )) : <tr><td colSpan={sources[0].columns.length} style={{ padding: '8px', textAlign: 'center' }}>(Table empty)</td></tr>}</tbody>
+                  <tbody>{sources[0].data.map((row, rIdx) => (<tr key={rIdx}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '8px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}</tbody>
                 </table>
               </div>
             </div>
@@ -300,9 +268,7 @@ function App() {
               <div style={{ background: colors.sidebar, padding: '15px', borderRadius: '8px', border: `1px solid ${colors.mellowBlue}`, overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
                   <thead><tr>{results.columns.map((c, i) => <th key={i} style={{ padding: '8px', border: `1px solid ${colors.border}`, textAlign: 'left' }}>{c}</th>)}</tr></thead>
-                  <tbody>{results.data.length > 0 ? results.data.map((row, rIdx) => (
-                      <tr key={rIdx}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '8px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>
-                    )) : <tr><td colSpan={results.columns.length} style={{ padding: '8px', textAlign: 'center' }}>(No data found)</td></tr>}</tbody>
+                  <tbody>{results.data.map((row, rIdx) => (<tr key={rIdx}>{row.map((cell, cIdx) => <td key={cIdx} style={{ padding: '8px', border: `1px solid ${colors.border}` }}>{cell}</td>)}</tr>))}</tbody>
                 </table>
               </div>
             </div>
