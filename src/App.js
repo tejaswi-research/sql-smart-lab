@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
+import SmartSuggestions from './SmartSuggestions';
 
 // --- 1. ROBUST PARSING LOGIC ---
 const parseSchema = (text) => {
@@ -39,6 +40,10 @@ function App() {
   const [error, setError] = useState("");
   const [studentQuestion, setStudentQuestion] = useState("");
   const [roadmap, setRoadmap] = useState([]);
+  const applySuggestion = (sql) => {
+  setQuery(sql); // This fills the editor with the curiosity query
+  handleRunQuery(sql); // This automatically triggers the visualization
+};
 
   const colors = {
     bg: '#121212', sidebar: '#1e1e1e', mellowBlue: '#569cd6', border: '#333',
@@ -111,6 +116,7 @@ function App() {
     setMultiRowPreview(parseAllInsertRows(val));
   };
 
+  
   const runQuery = async () => {
     setError(""); setSuccessMsg("");
     const upperQ = query.toUpperCase();
@@ -119,16 +125,16 @@ function App() {
       const tableName = tableMatch ? tableMatch[1] : null;
 
       if (tableName && (upperQ.includes("ALTER") || upperQ.includes("DELETE") || upperQ.includes("DROP") || upperQ.includes("UPDATE"))) {
-        const snapshot = await axios.post('http://localhost:8000/api/execute/', { query: `SELECT * FROM ${tableName};` });
+        const snapshot = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
         setSources([{ name: tableName, columns: snapshot.data.columns, data: snapshot.data.data }]);
       }
 
-      const response = await axios.post('http://localhost:8000/api/execute/', { query });
+      const response = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query });
       
       if (response.data.status === 'success') {
         setSuccessMsg(response.data.message || "Command executed successfully!");
         if (tableName && !upperQ.includes("DROP")) {
-          const updated = await axios.post('http://localhost:8000/api/execute/', { query: `SELECT * FROM ${tableName};` });
+          const updated = await axios.post('https://sql-smart-lab.onrender.com/api/execute/', { query: `SELECT * FROM ${tableName};` });
           setResults({ columns: updated.data.columns, data: updated.data.data });
         }
         if (upperQ.includes("DROP")) setActiveSchema(null);
@@ -140,6 +146,7 @@ function App() {
   };
 
   return (
+
     <div style={{ display: 'flex', backgroundColor: colors.bg, color: '#ccc', minHeight: '100vh', fontFamily: 'sans-serif' }}>
       
       {/* SIDEBAR */}
