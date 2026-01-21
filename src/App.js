@@ -133,9 +133,6 @@ function App() {
 
   // 3. LIVE "GHOST" VALUES (Maps what you type into the table cells)
   setMultiRowPreview(parseAllInsertRows(val));
-};
-    // 2. LIVE GHOST-TEXT EXTRACTION
-    setMultiRowPreview(parseAllInsertRows(val));
 
     // 3. MANUAL CREATE TABLE PARSING
     const detectedSchema = parseSchema(val);
